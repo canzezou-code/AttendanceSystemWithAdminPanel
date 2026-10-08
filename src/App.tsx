@@ -27,6 +27,9 @@ import {
 } from "lucide-react";
 
 const MODEL_URL = "https://teachablemachine.withgoogle.com/models/oElomHH3X/";
+const DEFAULT_ADMIN_PASSWORD = "111120";
+const DEFAULT_MEMBER_PASSWORD = "12345678";
+const MEMBER_NAMES = ["周高兴", "张子辰", "陈嘉琦", "孙源", "韩雨晋", "刘映汐", "袁诗杰", "邹璨泽", "韩润希"];
 type AttendanceStatus = "normal" | "late" | "pending";
 type AttendanceRecord = {
   name: string;
@@ -70,7 +73,7 @@ function CameraDialog({
 }: {
   open: boolean;
   onClose: () => void;
-  onRecognized: (name: string, confidence: number) => void;
+  onRecognized: (name: string, confidence: number) => boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -143,10 +146,16 @@ function CameraDialog({
           }
 
           if (stableRef.current.count >= 4 && !completedRef.current) {
+            const accepted = onRecognized(best.className, confidence);
+            if (!accepted) {
+              stableRef.current = { name: "", count: 0 };
+              setMessage("识别到的人脸与当前登录账号不一致");
+              frameRef.current = requestAnimationFrame(predict);
+              return;
+            }
             completedRef.current = true;
             setPhase("success");
             setMessage(`${best.className}，识别成功`);
-            onRecognized(best.className, confidence);
             window.setTimeout(onClose, 1400);
             return;
           }
@@ -314,7 +323,28 @@ function ManualRecordDialog({
 }
 
 export default function App() {
+  const publicPath = window.location.pathname.replace(/\/+$/, "");
+  const isMemberView = publicPath === "/member" || publicPath === "/user";
   const [now, setNow] = useState(new Date());
+  const [memberAccounts, setMemberAccounts] = useState<Record<string, string>>(() => {
+    const defaults = Object.fromEntries(MEMBER_NAMES.map((name) => [name, DEFAULT_MEMBER_PASSWORD]));
+    const saved = JSON.parse(localStorage.getItem("attendance-member-accounts") ?? "{}");
+    const accounts = { ...defaults, ...saved };
+    localStorage.setItem("attendance-member-accounts", JSON.stringify(accounts));
+    return accounts;
+  });
+  const [memberSession, setMemberSession] = useState(() => sessionStorage.getItem("attendance-member-session") ?? "");
+  const [accessRole, setAccessRole] = useState<"admin" | "member" | null>(() => {
+    const saved = sessionStorage.getItem("attendance-access-role");
+    return saved === "admin" || saved === "member" ? saved : null;
+  });
+  const [gateUsername, setGateUsername] = useState("");
+  const [gatePassword, setGatePassword] = useState("");
+  const [gateError, setGateError] = useState("");
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [authName, setAuthName] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authError, setAuthError] = useState("");
   const [mobileNav, setMobileNav] = useState(false);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [manualOpen, setManualOpen] = useState(false);
@@ -322,7 +352,12 @@ export default function App() {
   const [filter, setFilter] = useState<"all" | AttendanceStatus>("all");
   const [activeNav, setActiveNav] = useState("dashboard");
   const [toast, setToast] = useState("");
-  const [adminPassword, setAdminPassword] = useState(() => localStorage.getItem("attendance-admin-password") ?? "");
+  const [lastMemberPunch, setLastMemberPunch] = useState<{ name: string; time: string } | null>(null);
+  const [adminPassword, setAdminPassword] = useState(() => {
+    const saved = localStorage.getItem("attendance-admin-password");
+    if (!saved) localStorage.setItem("attendance-admin-password", DEFAULT_ADMIN_PASSWORD);
+    return saved ?? DEFAULT_ADMIN_PASSWORD;
+  });
   const [passwordInput, setPasswordInput] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [settingsUnlocked, setSettingsUnlocked] = useState(false);
@@ -406,8 +441,84 @@ export default function App() {
         record.name === name ? { ...record, time, status: isLate ? "late" : "normal", confidence, source: "face", note: undefined } : record,
       ),
     );
+    setLastMemberPunch({ name, time });
     showToast(`${name} 人脸打卡成功 · ${time}`);
+    return true;
   }, [showToast]);
+
+  const onMemberRecognized = useCallback((name: string, confidence: number) => {
+    if (name !== memberSession) {
+      showToast(`身份不匹配：当前登录账号为 ${memberSession}`);
+      return false;
+    }
+    return onRecognized(name, confidence);
+  }, [memberSession, onRecognized, showToast]);
+
+  const submitMemberAuth = (event: React.FormEvent) => {
+    event.preventDefault();
+    const username = authName.trim();
+    if (!MEMBER_NAMES.includes(username)) {
+      setAuthError("请输入已录入人脸模型的成员姓名");
+      return;
+    }
+    if (authMode === "login") {
+      if (memberAccounts[username] !== authPassword) {
+        setAuthError("用户名或密码不正确");
+        return;
+      }
+    } else {
+      if (authPassword !== DEFAULT_MEMBER_PASSWORD) {
+        setAuthError(`创建账号请使用初始密码 ${DEFAULT_MEMBER_PASSWORD}`);
+        return;
+      }
+      const accounts = { ...memberAccounts, [username]: authPassword };
+      setMemberAccounts(accounts);
+      localStorage.setItem("attendance-member-accounts", JSON.stringify(accounts));
+    }
+    sessionStorage.setItem("attendance-member-session", username);
+    setMemberSession(username);
+    setAuthPassword("");
+    setAuthError("");
+  };
+
+  const logoutMember = () => {
+    sessionStorage.removeItem("attendance-member-session");
+    sessionStorage.removeItem("attendance-access-role");
+    setMemberSession("");
+    setAccessRole(null);
+    setLastMemberPunch(null);
+    setAuthPassword("");
+  };
+
+  const loginAdmin = (event: React.FormEvent) => {
+    event.preventDefault();
+    const username = gateUsername.trim();
+    if (!MEMBER_NAMES.includes(username)) {
+      setGateError("请输入已录入的成员用户名");
+      return;
+    }
+    if (gatePassword === adminPassword) {
+      sessionStorage.setItem("attendance-access-role", "admin");
+      setAccessRole("admin");
+    } else if (memberAccounts[username] === gatePassword) {
+      sessionStorage.setItem("attendance-access-role", "member");
+      sessionStorage.setItem("attendance-member-session", username);
+      setAccessRole("member");
+      setMemberSession(username);
+    } else {
+      setGateError("用户名或密码不正确，请重新输入");
+      return;
+    }
+    setGateUsername("");
+    setGatePassword("");
+    setGateError("");
+  };
+
+  const logoutAdmin = () => {
+    sessionStorage.removeItem("attendance-access-role");
+    setAccessRole(null);
+    setSettingsUnlocked(false);
+  };
 
   const addManualRecord = (name: string, time: string, note: string) => {
     const [hour, minute] = time.split(":").map(Number);
@@ -535,6 +646,159 @@ export default function App() {
     </div>
   );
 
+  if (isMemberView && !memberSession) {
+    return (
+      <div className="login-view">
+        <div className="login-visual">
+          <div className="login-brand">
+            <div className="brand-mark"><ShieldCheck size={22} strokeWidth={2.4} /></div>
+            <div><strong>准点</strong><span>智能考勤系统</span></div>
+          </div>
+          <div className="login-statement">
+            <span className="eyebrow">SMART ATTENDANCE</span>
+            <h1>每一次准时，<br />都值得被认真记录。</h1>
+            <p>安全、快速的人脸识别考勤，为每位成员建立独立身份。</p>
+          </div>
+          <div className="login-model-status"><i /><span>人脸模型已连接</span><strong>9 位成员</strong></div>
+        </div>
+        <main className="login-panel">
+          <form className="login-form" onSubmit={submitMemberAuth}>
+            <div className="login-mobile-logo"><ShieldCheck size={22} /><strong>准点</strong></div>
+            <span className="login-kicker">MEMBER ACCESS</span>
+            <h2>{authMode === "login" ? "用户登录" : "创建用户账号"}</h2>
+            <p>{authMode === "login" ? "登录用户端后即可进行今日人脸打卡。" : "选择您的姓名并使用统一初始密码创建账号。"}</p>
+            <div className="auth-tabs">
+              <button type="button" className={authMode === "login" ? "active" : ""} onClick={() => { setAuthMode("login"); setAuthError(""); }}>账号登录</button>
+              <button type="button" className={authMode === "register" ? "active" : ""} onClick={() => { setAuthMode("register"); setAuthError(""); }}>创建账号</button>
+            </div>
+            <label className="field-label">用户名
+              <input
+                value={authName}
+                onChange={(event) => { setAuthName(event.target.value); setAuthError(""); }}
+                placeholder="请输入您的姓名"
+                list="member-usernames"
+                autoComplete="username"
+                required
+              />
+              <datalist id="member-usernames">
+                {MEMBER_NAMES.map((name) => <option key={name} value={name} />)}
+              </datalist>
+            </label>
+            <label className="field-label">{authMode === "login" ? "账号密码" : "初始密码"}
+              <input type="password" value={authPassword} onChange={(event) => { setAuthPassword(event.target.value); setAuthError(""); }} placeholder="请输入 8 位密码" autoComplete={authMode === "login" ? "current-password" : "new-password"} required />
+            </label>
+            {authMode === "register" && <div className="initial-password-note"><LockKeyhole size={15} /><span>所有成员初始密码：<strong>{DEFAULT_MEMBER_PASSWORD}</strong></span></div>}
+            {authError && <div className="form-error">{authError}</div>}
+            <button className="primary-button login-submit" type="submit">
+              {authMode === "login" ? <UserCheck size={18} /> : <Plus size={18} />}
+              {authMode === "login" ? "登录成员端" : "创建并登录"}
+            </button>
+            <div className="login-security"><ShieldCheck size={14} />登录账号将与人脸识别结果进行身份核验</div>
+          </form>
+        </main>
+      </div>
+    );
+  }
+
+  if (isMemberView || accessRole === "member") {
+    return (
+      <div className="member-view">
+        <header className="member-header">
+          <div className="brand member-brand">
+            <div className="brand-mark"><ShieldCheck size={20} strokeWidth={2.4} /></div>
+            <div><strong>准点</strong><span>用户打卡端</span></div>
+          </div>
+          <div className="member-account">
+            <div><span>{memberSession.slice(0, 1)}</span><strong>{memberSession}</strong></div>
+            <button onClick={logoutMember}><LogOut size={15} />退出</button>
+          </div>
+        </header>
+        <main className="member-main">
+          <section className="member-clock-card">
+            <span className="member-date">{formatDate(now)}</span>
+            <div className="member-clock">{now.toLocaleTimeString("zh-CN", { hour12: false })}</div>
+            <p>每日标准打卡时间为中午 13:00</p>
+            <div className="member-face-art">
+              <div className="face-rings"><ScanFace size={54} strokeWidth={1.5} /></div>
+              <span>使用已录入的人脸完成身份验证</span>
+            </div>
+            {lastMemberPunch ? (
+              <div className="member-success">
+                <span><Check size={20} /></span>
+                <div><strong>{lastMemberPunch.name}，打卡成功</strong><small>登记时间 {lastMemberPunch.time}</small></div>
+              </div>
+            ) : (
+              <button className="member-punch-button" onClick={() => setCameraOpen(true)}>
+                <ScanFace size={21} />开始人脸打卡
+              </button>
+            )}
+            <div className="member-privacy"><LockKeyhole size={14} />摄像头仅在您确认授权后开启</div>
+          </section>
+        </main>
+        <CameraDialog open={cameraOpen} onClose={closeCamera} onRecognized={onMemberRecognized} />
+        {toast && <div className="toast"><span><Check size={17} /></span>{toast}</div>}
+      </div>
+    );
+  }
+
+  if (accessRole !== "admin") {
+    return (
+      <div className="login-view admin-login-view">
+        <div className="login-visual">
+          <div className="login-brand">
+            <div className="brand-mark"><ShieldCheck size={22} strokeWidth={2.4} /></div>
+            <div><strong>准点</strong><span>智能考勤系统</span></div>
+          </div>
+          <div className="login-statement">
+            <span className="eyebrow">ATTENDANCE PORTAL</span>
+            <h1>让每一次考勤，<br />清晰且有据可查。</h1>
+            <p>成员与管理员使用同一个入口，系统会根据密码自动匹配对应权限。</p>
+          </div>
+          <div className="login-model-status"><i /><span>考勤系统安全连接</span><strong>运行正常</strong></div>
+        </div>
+        <main className="login-panel">
+          <form className="login-form admin-login-form" onSubmit={loginAdmin}>
+            <div className="login-mobile-logo"><ShieldCheck size={22} /><strong>准点</strong></div>
+            <div className="admin-login-icon"><LockKeyhole size={24} /></div>
+            <span className="login-kicker">ACCOUNT ACCESS</span>
+            <h2>账号登录</h2>
+            <p>同一个入口，根据账号密码自动进入对应权限界面。</p>
+            <label className="field-label admin-username-field">用户名
+              <input
+                value={gateUsername}
+                onChange={(event) => { setGateUsername(event.target.value); setGateError(""); }}
+                placeholder="请输入成员姓名"
+                list="portal-usernames"
+                autoComplete="username"
+                autoFocus
+                required
+              />
+              <datalist id="portal-usernames">
+                {MEMBER_NAMES.map((name) => <option key={name} value={name} />)}
+              </datalist>
+            </label>
+            <label className="field-label">密码
+              <input
+                type="password"
+                value={gatePassword}
+                onChange={(event) => { setGatePassword(event.target.value); setGateError(""); }}
+                placeholder="请输入密码"
+                autoComplete="current-password"
+                required
+              />
+            </label>
+            {gateError && <div className="form-error">{gateError}</div>}
+            <button className="primary-button login-submit" type="submit"><ShieldCheck size={18} />登录系统</button>
+            <div className="role-passwords">
+              <span><i className="member-dot" />成员密码进入打卡端</span>
+              <span><i className="admin-dot" />管理员密码进入后台</span>
+            </div>
+          </form>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="app-shell">
       <aside className={`sidebar ${mobileNav ? "open" : ""}`}>
@@ -572,7 +836,7 @@ export default function App() {
           <div className="top-actions">
             <div className="current-time">{now.toLocaleTimeString("zh-CN", { hour12: false })}</div>
             <button className="icon-button notification" aria-label="通知"><Bell size={19} /><i /></button>
-            <button className="logout-button"><LogOut size={17} />退出</button>
+            <button className="logout-button" onClick={logoutAdmin}><LogOut size={17} />退出</button>
           </div>
         </header>
 
@@ -685,6 +949,7 @@ export default function App() {
                   {passwordError && <div className="form-error">{passwordError}</div>}
                   <button className="secondary-button save-password" onClick={savePassword}><UserCheck size={17} />更新后台密码</button>
                   <div className="security-foot"><ShieldCheck size={18} /><span>手动补录均需密码验证，并在记录中永久标记来源。</span></div>
+                  <button className="member-entry-button" onClick={() => window.open("/user", "_blank")}><Users size={17} />打开用户打卡端</button>
                 </section>
               </div>
             )
