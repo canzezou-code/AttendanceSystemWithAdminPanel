@@ -1,0 +1,10 @@
+{
+  "description": "Automates daily 1 PM attendance using facial recognition with a real-time admin dashboard for monitoring and manual check-ins.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
