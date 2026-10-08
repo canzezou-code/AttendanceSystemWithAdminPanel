@@ -22,6 +22,7 @@ import {
   ShieldCheck,
   UserCheck,
   Users,
+  Video,
   X,
 } from "lucide-react";
 
@@ -76,7 +77,8 @@ function CameraDialog({
   const frameRef = useRef<number | null>(null);
   const stableRef = useRef({ name: "", count: 0 });
   const completedRef = useRef(false);
-  const [phase, setPhase] = useState<"loading" | "scanning" | "success" | "error">("loading");
+  const [phase, setPhase] = useState<"consent" | "loading" | "scanning" | "success" | "error">("consent");
+  const [cameraRequested, setCameraRequested] = useState(false);
   const [message, setMessage] = useState("正在加载人脸识别模型…");
   const [prediction, setPrediction] = useState({ name: "请正对摄像头", confidence: 0 });
 
@@ -88,6 +90,14 @@ function CameraDialog({
 
   useEffect(() => {
     if (!open) return;
+    setCameraRequested(false);
+    setPhase("consent");
+    setMessage("确认后才会申请摄像头权限");
+    setPrediction({ name: "请正对摄像头", confidence: 0 });
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || !cameraRequested) return;
     let cancelled = false;
     completedRef.current = false;
     stableRef.current = { name: "", count: 0 };
@@ -125,14 +135,14 @@ function CameraDialog({
           const confidence = Math.round(best.probability * 100);
           setPrediction({ name: best.className, confidence });
 
-          if (best.probability >= 0.88) {
+          if (best.probability >= 0.6) {
             if (stableRef.current.name === best.className) stableRef.current.count += 1;
             else stableRef.current = { name: best.className, count: 1 };
           } else {
             stableRef.current = { name: "", count: 0 };
           }
 
-          if (stableRef.current.count >= 6 && !completedRef.current) {
+          if (stableRef.current.count >= 4 && !completedRef.current) {
             completedRef.current = true;
             setPhase("success");
             setMessage(`${best.className}，识别成功`);
@@ -155,7 +165,7 @@ function CameraDialog({
       cancelled = true;
       stopCamera();
     };
-  }, [onClose, onRecognized, open, stopCamera]);
+  }, [cameraRequested, onClose, onRecognized, open, stopCamera]);
 
   if (!open) return null;
 
@@ -174,12 +184,24 @@ function CameraDialog({
 
         <div className={`camera-stage ${phase}`}>
           <video ref={videoRef} muted playsInline />
-          <div className="face-guide">
-            <span />
-            <span />
-            <span />
-            <span />
-          </div>
+          {phase !== "consent" && (
+            <div className="face-guide">
+              <span />
+              <span />
+              <span />
+              <span />
+            </div>
+          )}
+          {phase === "consent" && (
+            <div className="camera-cover consent-cover">
+              <div className="consent-icon"><Video size={32} /></div>
+              <strong>是否使用摄像头？</strong>
+              <span>摄像头画面仅用于本次人脸识别，不会上传保存</span>
+              <button className="camera-consent-button" onClick={() => setCameraRequested(true)}>
+                <Video size={17} />使用摄像头
+              </button>
+            </div>
+          )}
           {phase === "loading" && (
             <div className="camera-cover">
               <LoaderCircle className="spin" size={34} />
@@ -202,11 +224,11 @@ function CameraDialog({
 
         <div className="prediction-row">
           <div className={`scan-indicator ${phase}`}>
-            {phase === "scanning" ? <ScanFace size={22} /> : phase === "success" ? <Check size={22} /> : <LoaderCircle size={22} />}
+            {phase === "consent" ? <ShieldCheck size={22} /> : phase === "scanning" ? <ScanFace size={22} /> : phase === "success" ? <Check size={22} /> : <LoaderCircle size={22} />}
           </div>
           <div className="prediction-copy">
-            <strong>{phase === "scanning" ? prediction.name : message}</strong>
-            <span>{phase === "scanning" ? message : "打卡记录将实时同步到管理后台"}</span>
+            <strong>{phase === "consent" ? "等待摄像头授权" : phase === "scanning" ? prediction.name : message}</strong>
+            <span>{phase === "consent" ? "识别置信度达到 60% 即可完成打卡" : phase === "scanning" ? message : "打卡记录将实时同步到管理后台"}</span>
           </div>
           {phase === "scanning" && <strong className="confidence">{prediction.confidence}%</strong>}
         </div>
@@ -372,6 +394,8 @@ export default function App() {
     setToast(text);
     window.setTimeout(() => setToast(""), 3500);
   }, []);
+
+  const closeCamera = useCallback(() => setCameraOpen(false), []);
 
   const onRecognized = useCallback((name: string, confidence: number) => {
     const timestamp = new Date();
@@ -669,7 +693,7 @@ export default function App() {
       </main>
 
       {mobileNav && <button className="nav-scrim" onClick={() => setMobileNav(false)} aria-label="关闭菜单" />}
-      <CameraDialog open={cameraOpen} onClose={() => setCameraOpen(false)} onRecognized={onRecognized} />
+      <CameraDialog open={cameraOpen} onClose={closeCamera} onRecognized={onRecognized} />
       <ManualRecordDialog open={manualOpen} password={adminPassword} records={records} onClose={() => setManualOpen(false)} onSubmit={addManualRecord} />
       {toast && <div className="toast"><span><Check size={17} /></span>{toast}</div>}
     </div>
